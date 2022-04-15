@@ -12,28 +12,39 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+
+	deploymentv1 "github.com/muralov/important-deployment/api/v1"
 )
 
 type DeploymentReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme            *runtime.Scheme
+	UpdatedGeneration map[string]int64
+	ReadyGeneration   map[string]int64
+	CreatedGeneration map[string]int64
 }
 
 func (r *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
-
+	log := log.FromContext(ctx).WithName(req.NamespacedName.String())
 	log.Info("Reconciling " + req.NamespacedName.String())
 
 	var deployment appsv1.Deployment
-
 	if err := r.Get(ctx, req.NamespacedName, &deployment); err != nil {
 		if apierrors.IsNotFound(err) {
 			// c. when a deployment is DELETED
-			notificationErr := r.createNotification("The deployment "+req.NamespacedName.String()+" is deleted.", ctx)
+			// TODO: what to do with Notification CR is deleted
+			// May be just send notifaction message. That's it!
+			notificationErr := r.sendNotification("The deployment "+req.NamespacedName.String()+" is deleted.", ctx)
+			delete(r.CreatedGeneration, deployment.ObjectMeta.Name)
+			delete(r.UpdatedGeneration, deployment.ObjectMeta.Name)
+			delete(r.ReadyGeneration, deployment.ObjectMeta.Name)
+			// TODO: delete the Notification CR
 			if notificationErr != nil {
 				// retry sending notification
 				return ctrl.Result{}, notificationErr
@@ -44,27 +55,115 @@ func (r *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
-	// A notification about the name of the changed deployment-resource + the changes which were made.
-
-	// There should be 3 types of notification
-	// a. when a deployment is freshly CREATED
-
-	if deployment.ObjectMeta.Generation == 1 {
-
+	// if deletionTimestamp is set, retry until it gets deleted fully
+	if !deployment.DeletionTimestamp.IsZero() {
+		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// b. when a deployment is READY (all replicas up and running)
-	// TODO: don't s end notification if operator restarts
-	if *deployment.Spec.Replicas == deployment.Status.ReadyReplicas {
-		r.createNotification("The deployment "+req.NamespacedName.String()+" is ready.", ctx)
+	err := r.createOrUpdateNotification(&deployment, ctx)
+	if err != nil {
+		// retry creating or sending notification if fails
+		return ctrl.Result{}, err
 	}
-
-	// fmt.Println("The changed deployment: " + deployment.Namespace + " / " + deployment.Name)
 
 	return ctrl.Result{}, nil
 }
 
-func (r *DeploymentReconciler) createNotification(message string, ctx context.Context) error {
+func (r *DeploymentReconciler) createOrUpdateNotification(deployment *appsv1.Deployment, ctx context.Context) error {
+	log := log.FromContext(ctx)
+
+	var notification deploymentv1.Notification
+	if err := r.Get(ctx, types.NamespacedName{Namespace: deployment.Namespace, Name: deployment.Name}, &notification); err != nil {
+		if apierrors.IsNotFound(err) {
+			// a. when a deployment is freshly CREATED
+			message := "The deployment " + deployment.Namespace + "/" + deployment.Name + " is created."
+			notification = deploymentv1.Notification{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: deployment.Namespace,
+					Name:      deployment.Name,
+				},
+				Spec: deploymentv1.NotificationSpec{
+					Message:    message,
+					Deployment: deployment,
+				},
+			}
+
+			if r.CreatedGeneration[deployment.ObjectMeta.Name] != deployment.ObjectMeta.Generation {
+				err = r.sendNotification(message, ctx)
+				if err != nil {
+					return err
+				}
+				r.CreatedGeneration[deployment.ObjectMeta.Name] = deployment.ObjectMeta.Generation
+			}
+			// create notification CR confirming notification was successfully sent
+			err = r.Client.Create(ctx, &notification)
+			if err != nil {
+				return err
+			}
+			return nil
+		}
+		log.Error(err, "unable to fetch Deployment")
+		return err
+	}
+
+	// create update notification only if spec is changed
+	if deployment.ObjectMeta.Generation != notification.Spec.Deployment.ObjectMeta.Generation {
+		message := "The deployment " + deployment.Namespace + "/" + deployment.Name + " is updated."
+		if r.UpdatedGeneration[deployment.ObjectMeta.Name] != deployment.ObjectMeta.Generation {
+			err := r.sendNotification(message, ctx)
+			if err != nil {
+				return err
+			}
+			r.UpdatedGeneration[deployment.ObjectMeta.Name] = deployment.ObjectMeta.Generation
+		}
+
+		diff :=  
+		// create notification CR confirming notification was successfully sent
+		notification.Spec = deploymentv1.NotificationSpec{
+			Message:    message + "diff",
+			Deployment: deployment,
+		}
+		err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+			return r.Client.Update(ctx, &notification)
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	// b. when a deployment is READY (all replicas up and running)
+	if deployment.ObjectMeta.Generation == deployment.Status.ObservedGeneration &&
+		*deployment.Spec.Replicas == deployment.Status.ReadyReplicas &&
+		notification.Spec.ReadyGeneration != deployment.Generation {
+		message := "The deployment " + deployment.Namespace + "/" + deployment.Name + " is ready."
+		if r.ReadyGeneration[deployment.ObjectMeta.Name] != deployment.ObjectMeta.Generation {
+			err := r.sendNotification(message, ctx)
+			if err != nil {
+				return err
+			}
+			r.ReadyGeneration[deployment.ObjectMeta.Name] = deployment.ObjectMeta.Generation
+		}
+
+		// create notification CR confirming notification was successfully sent
+		notification.Spec = deploymentv1.NotificationSpec{
+			Message:         message,
+			Deployment:      deployment,
+			ReadyGeneration: deployment.ObjectMeta.Generation,
+		}
+		err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+			return r.Client.Update(ctx, &notification)
+		})
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+
+	return nil
+}
+
+// sends a notification to an external service
+func (r *DeploymentReconciler) sendNotification(message string, ctx context.Context) error {
 	log := log.FromContext(ctx)
 	notificationBody, _ := json.Marshal(map[string]string{
 		"message":        message,
@@ -138,5 +237,6 @@ func (r *DeploymentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&appsv1.Deployment{}).
 		WithEventFilter(isSomeCiSystem).
+		Owns(&deploymentv1.Notification{}).
 		Complete(r)
 }

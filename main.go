@@ -33,7 +33,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	deploymentv1 "github.com/muralov/important-deployment/api/v1"
-	"github.com/muralov/important-deployment/controllers"
 
 	//+kubebuilder:scaffold:imports
 
@@ -85,14 +84,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controllers.NotificationReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+	if err = (&controller.DeploymentReconciler{
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		UpdatedGeneration: map[string]int64{},
+		ReadyGeneration:   map[string]int64{},
+		CreatedGeneration: map[string]int64{},
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Notification")
+		setupLog.Error(err, "unable to create controller", "controller", "ImportantJob")
 		os.Exit(1)
 	}
-	//+kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
@@ -100,14 +101,6 @@ func main() {
 	}
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
-		os.Exit(1)
-	}
-
-	if err = (&controller.DeploymentReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ImportantJob")
 		os.Exit(1)
 	}
 

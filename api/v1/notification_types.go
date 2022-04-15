@@ -17,6 +17,7 @@ limitations under the License.
 package v1
 
 import (
+	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -29,7 +30,9 @@ type NotificationSpec struct {
 	// Important: Run "make" to regenerate code after modifying this file
 
 	// Foo is an example field of Notification. Edit notification_types.go to remove/update
-	DeploymentNamespacedName string `json:"deplyomentName,omitempty"`
+	Message         string             `json:"message"`
+	Deployment      *appsv1.Deployment `json:"deployment"`
+	ReadyGeneration int64              `json:"readyGeneration"`
 }
 
 // NotificationStatus defines the observed state of Notification
