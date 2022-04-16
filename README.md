@@ -32,7 +32,7 @@ $ kubectl get pods
 
 ## Architecture
 
-<img src=important-deployment.jpg" alt="Important deployment" title="Optional title">
+![important-deployment](https://user-images.githubusercontent.com/13185122/163692491-9be9b5e0-6808-4d1a-b437-8f1443dc9fa6.jpg)
 
 ## Testing
 
