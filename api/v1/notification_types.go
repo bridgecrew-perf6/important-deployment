@@ -29,7 +29,6 @@ type NotificationSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	// Foo is an example field of Notification. Edit notification_types.go to remove/update
 	Message         string             `json:"message"`
 	Deployment      *appsv1.Deployment `json:"deployment"`
 	ReadyGeneration int64              `json:"readyGeneration"`
