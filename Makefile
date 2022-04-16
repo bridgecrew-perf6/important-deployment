@@ -1,6 +1,6 @@
 
 # Image URL to use all building/pushing image targets
-IMG ?= controller:latest
+IMG ?= muralov/important-deployment:latest
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.23
 
@@ -41,7 +41,7 @@ help: ## Display this help.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	$(CONTROLLER_GEN) rbac:roleName=manager-role webhook paths="./..."
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -66,7 +66,7 @@ build: generate fmt vet ## Build manager binary.
 	go build -o bin/manager main.go
 
 .PHONY: run
-run: generate manifests generate fmt vet ## Run a controller from your host.
+run: generate manifests fmt vet ## Run a controller from your host.
 	go run ./main.go
 
 .PHONY: docker-build
@@ -84,31 +84,30 @@ ifndef ignore-not-found
 endif
 
 .PHONY: install
-install: generate manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
-	kubectl build config/crd | kubectl apply -f -
+install: generate manifests ## Install CRDs into the K8s cluster specified in ~/.kube/config.
+	$(KUSTOMIZE) config/crd | kubectl apply -f -
 
 .PHONY: uninstall
-uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	$(KUSTOMIZE) build config/crd | kubectl delete --ignore-not-found=$(ignore-not-found) -f -
+uninstall: manifests  ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
+	$(KUSTOMIZE) config/crd | kubectl delete --ignore-not-found=$(ignore-not-found) -f -
 
 .PHONY: deploy
-deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
-	$(KUSTOMIZE) build config/default | kubectl apply -f -
+deploy: manifests ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+	$(KUSTOMIZE) config/default | kubectl apply -f -
 
 .PHONY: undeploy
 undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	$(KUSTOMIZE) build config/default | kubectl delete --ignore-not-found=$(ignore-not-found) -f -
+	$(KUSTOMIZE) config/default | kubectl delete --ignore-not-found=$(ignore-not-found) -f -
 
 CONTROLLER_GEN = $(shell pwd)/bin/controller-gen
 .PHONY: controller-gen
 controller-gen: ## Download controller-gen locally if necessary.
 	$(call go-get-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen@v0.8.0)
 
-KUSTOMIZE = $(shell pwd)/bin/kustomize
-.PHONY: kustomize
-kustomize: ## Download kustomize locally if necessary.
-	$(call go-get-tool,$(KUSTOMIZE),sigs.k8s.io/kustomize/kustomize/v3@v3.8.7)
+KUSTOMIZE = kubectl kustomize
+# .PHONY: kustomize
+# kustomize: ## Download kustomize locally if necessary.
+# 	$(call go-get-tool,$(KUSTOMIZE),sigs.k8s.io/kustomize/kustomize/v3@v3.8.7)
 
 ENVTEST = $(shell pwd)/bin/setup-envtest
 .PHONY: envtest

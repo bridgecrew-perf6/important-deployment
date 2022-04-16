@@ -32,3 +32,6 @@ rules:
   - get
   - patch
   - update
+- apiGroups: ["extensions", "apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch"]
