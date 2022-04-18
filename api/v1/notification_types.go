@@ -29,9 +29,10 @@ type NotificationSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	Message         string             `json:"message"`
-	Deployment      *appsv1.Deployment `json:"deployment"`
-	ReadyGeneration int64              `json:"readyGeneration"`
+	Message    string             `json:"message"`
+	Deployment *appsv1.Deployment `json:"deployment"`
+	// this is the last deployment generation it had. This is needed to identify if Notification CR is also up-to-date with deployment.
+	ReadyGeneration int64 `json:"readyGeneration"`
 }
 
 // NotificationStatus defines the observed state of Notification

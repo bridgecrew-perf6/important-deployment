@@ -17,6 +17,11 @@ c. when a deployment is deleted
 
 * Kubernetes cluster. For example, k3d or any remote cluster
 
+## Architecture
+
+The operator creates an additional resource to store last processed deployment. It is needed not to send the same deployment CREATED / UPDATED notification more than once as well as to put diff in UPDATED notification. Apart from having notification CR, runtime map variables `SeenDeploymentUpdatedGeneration`, `SeenDeploymentUpdatedGeneration`, and `SeenDeploymentUpdatedGeneration` introduced to prevent resending the same notification if notification CR is not yet fully persisested as storing to ETCD is asychronous. This means that notifications are sent only once to an external service.
+
+![important-deployment](https://user-images.githubusercontent.com/13185122/163692491-9be9b5e0-6808-4d1a-b437-8f1443dc9fa6.jpg)
 
 ## Deploy the important deployment operator
 
@@ -30,13 +35,35 @@ $ make deploy
 $ kubectl get pods
 ```
 
-## Architecture
-
-![important-deployment](https://user-images.githubusercontent.com/13185122/163692491-9be9b5e0-6808-4d1a-b437-8f1443dc9fa6.jpg)
-
 ## Testing
 
-Create a Kubernetes deployment resoruce in "devops" namespace with a label "importantDeployment: some-ci-system" or without it to see whether operator reacts on it. 
+First, the namespace `devops` needs to be created and create a Kubernetes deployment resoruce in `devops` namespace with a label "importantDeployment: some-ci-system" or without it to see whether operator reacts on it. For example:  
+
+```
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: devops
+  name: nginx-deployment
+  labels:
+    importantDeployment: some-ci-system
+spec:
+  selector:
+    matchLabels:
+      app: nginx
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.14.2
+        ports:
+        - containerPort: 80
+
+```
 To see the how operator reacts, please have a look at the operator logs with
 ```console
 $ kubectl logs -f -c manager {POD_NAME} -n {OPERATOR_NAMESPACE}
@@ -45,7 +72,7 @@ $ kubectl logs -f -c manager {POD_NAME} -n {OPERATOR_NAMESPACE}
 Moreover, you can also have look at the Notification CR which stores last sent notification to an external service.
 
 ### Notification types:
-* CREATE: you see a log entry similar in the log where external httbin endpoint echoes the request:
+* CREATED: you see a log entry similar in the log where external httbin endpoint echoes the request:
 
 ```
 {
@@ -65,7 +92,7 @@ Moreover, you can also have look at the Notification CR which stores last sent n
 }
 ```
 
-* UPDATE: you see the following where `replicas` of a deployment is changed from 2 to 10:
+* UPDATED: you see the following where `replicas` of a deployment is changed from 2 to 10:
 
 ```
 
@@ -88,7 +115,7 @@ Moreover, you can also have look at the Notification CR which stores last sent n
 ```
 
 
-* READ: you see something similar as it follows:
+* READY: you see something similar as it follows:
 
 ```
 {
@@ -108,7 +135,7 @@ Moreover, you can also have look at the Notification CR which stores last sent n
 }
 ```
 
-* DELETE: you see something similar as it follows:
+* DELETED: you see something similar as it follows:
 
 ```
 {

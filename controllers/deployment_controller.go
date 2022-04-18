@@ -26,12 +26,12 @@ import (
 type DeploymentReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
-	// prevents resending notification in case notification CR is not fully saved yet
-	UpdatedGeneration map[string]int64
-	// prevents resending notification in case notification CR is not fully saved yet
-	ReadyGeneration map[string]int64
-	// prevents resending notification in case notification CR is not fully saved yet
-	CreatedGeneration map[string]int64
+	// prevents resending notification in case notification CR is not fully saved yet after sending notification
+	SeenDeploymentUpdatedGeneration map[string]int64
+	// prevents resending notification in case notification CR is not fully saved yet after sending notification
+	SeenDeploymentReadyGeneration map[string]int64
+	// prevents resending notification in case notification CR is not fully saved yet after sending notification
+	SeenDeploymentCreatedGeneration map[string]int64
 }
 
 func (r *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -43,11 +43,8 @@ func (r *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if apierrors.IsNotFound(err) {
 			// c. when a deployment is DELETED
 			err := r.sendNotification("The deployment "+req.NamespacedName.String()+" is deleted.", ctx)
-			// clear the temporary caching
-			delete(r.CreatedGeneration, deployment.ObjectMeta.Name)
-			delete(r.UpdatedGeneration, deployment.ObjectMeta.Name)
-			delete(r.ReadyGeneration, deployment.ObjectMeta.Name)
-			// TODO: delete the Notification CR
+			// delete seen deployment generation entry if a deployment is deleted
+			r.deleteSeenDeploymentGeneration(req.Name)
 			if err != nil {
 				return ctrl.Result{}, err // retry
 			}
@@ -70,24 +67,30 @@ func (r *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	return ctrl.Result{}, nil
 }
 
+func (r *DeploymentReconciler) deleteSeenDeploymentGeneration(deploymentName string) {
+	delete(r.SeenDeploymentCreatedGeneration, deploymentName)
+	delete(r.SeenDeploymentUpdatedGeneration, deploymentName)
+	delete(r.SeenDeploymentReadyGeneration, deploymentName)
+}
+
 func (r *DeploymentReconciler) handleCreateUpdateReadyNotifications(deployment *appsv1.Deployment, ctx context.Context) error {
 	log := log.FromContext(ctx)
 
-	var notification deploymentv1.Notification
-	if err := r.Get(ctx, types.NamespacedName{Namespace: deployment.Namespace, Name: deployment.Name}, &notification); err != nil {
+	notification := &deploymentv1.Notification{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: deployment.Namespace, Name: deployment.Name}, notification); err != nil {
 		if apierrors.IsNotFound(err) {
 			// a. when a deployment is freshly CREATED
 			message := "Created the deployment " + deployment.Namespace + "/" + deployment.Name
 			// prevent created notification if it is for the same deployment
-			if r.CreatedGeneration[deployment.ObjectMeta.Name] != deployment.ObjectMeta.Generation {
+			if r.SeenDeploymentCreatedGeneration[deployment.ObjectMeta.Name] != deployment.ObjectMeta.Generation {
 				err = r.sendNotification(message, ctx)
 				if err != nil {
 					return err
 				}
-				r.CreatedGeneration[deployment.ObjectMeta.Name] = deployment.ObjectMeta.Generation
+				r.SeenDeploymentCreatedGeneration[deployment.ObjectMeta.Name] = deployment.ObjectMeta.Generation
 			}
 			// create notification CR confirming notification was successfully sent
-			notification = deploymentv1.Notification{
+			notification = &deploymentv1.Notification{
 				ObjectMeta: metav1.ObjectMeta{
 					Namespace: deployment.Namespace,
 					Name:      deployment.Name,
@@ -97,7 +100,10 @@ func (r *DeploymentReconciler) handleCreateUpdateReadyNotifications(deployment *
 					Deployment: deployment,
 				},
 			}
-			err = r.Client.Create(ctx, &notification)
+			if err := ctrl.SetControllerReference(deployment, notification, r.Scheme); err != nil {
+				return err
+			}
+			err = r.Client.Create(ctx, notification)
 			if err != nil {
 				return err
 			}
@@ -116,12 +122,12 @@ func (r *DeploymentReconciler) handleCreateUpdateReadyNotifications(deployment *
 		message := "Updated the deployment " + deployment.Namespace + "/" + deployment.Name + " with: " + fmt.Sprintf("%#v", deploymentSpecDiff)
 
 		// prevent update notification if it is for the same deployment
-		if r.UpdatedGeneration[deployment.ObjectMeta.Name] != deployment.ObjectMeta.Generation {
+		if r.SeenDeploymentUpdatedGeneration[deployment.ObjectMeta.Name] != deployment.ObjectMeta.Generation {
 			err := r.sendNotification(message, ctx)
 			if err != nil {
 				return err
 			}
-			r.UpdatedGeneration[deployment.ObjectMeta.Name] = deployment.ObjectMeta.Generation
+			r.SeenDeploymentUpdatedGeneration[deployment.ObjectMeta.Name] = deployment.ObjectMeta.Generation
 		}
 
 		// create notification CR confirming notification was successfully sent
@@ -130,7 +136,7 @@ func (r *DeploymentReconciler) handleCreateUpdateReadyNotifications(deployment *
 			Deployment: deployment,
 		}
 		err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-			return r.Client.Update(ctx, &notification)
+			return r.Client.Update(ctx, notification)
 		})
 		if err != nil {
 			return err
@@ -138,15 +144,17 @@ func (r *DeploymentReconciler) handleCreateUpdateReadyNotifications(deployment *
 	}
 
 	// b. when a deployment is READY (all replicas up and running)
-	if deployment.ObjectMeta.Generation == deployment.Status.ObservedGeneration && *deployment.Spec.Replicas == deployment.Status.ReadyReplicas && notification.Spec.ReadyGeneration != deployment.Generation {
+	if deployment.ObjectMeta.Generation == deployment.Status.ObservedGeneration &&
+		*deployment.Spec.Replicas == deployment.Status.ReadyReplicas && notification.Spec.ReadyGeneration != deployment.Generation {
+
 		message := "The deployment " + deployment.Namespace + "/" + deployment.Name + " is ready."
 		// prevent ready notification if it is for the same deployment
-		if r.ReadyGeneration[deployment.ObjectMeta.Name] != deployment.ObjectMeta.Generation {
+		if r.SeenDeploymentReadyGeneration[deployment.ObjectMeta.Name] != deployment.ObjectMeta.Generation {
 			err := r.sendNotification(message, ctx)
 			if err != nil {
 				return err
 			}
-			r.ReadyGeneration[deployment.ObjectMeta.Name] = deployment.ObjectMeta.Generation
+			r.SeenDeploymentReadyGeneration[deployment.ObjectMeta.Name] = deployment.ObjectMeta.Generation
 		}
 
 		// create notification CR confirming notification was successfully sent
@@ -156,7 +164,7 @@ func (r *DeploymentReconciler) handleCreateUpdateReadyNotifications(deployment *
 			ReadyGeneration: deployment.ObjectMeta.Generation,
 		}
 		err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-			return r.Client.Update(ctx, &notification)
+			return r.Client.Update(ctx, notification)
 		})
 		if err != nil {
 			return err
@@ -186,7 +194,7 @@ func (r *DeploymentReconciler) sendNotification(message string, ctx context.Cont
 	if err != nil {
 		log.Error(err, "cannot convert the response body to string")
 	}
-	fmt.Println(string(b))
+	log.Info(string(b))
 
 	return nil
 }
@@ -200,7 +208,7 @@ func (r *DeploymentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&appsv1.Deployment{}).
-		WithEventFilter(isSomeCiSystem).
 		Owns(&deploymentv1.Notification{}).
+		WithEventFilter(isSomeCiSystem).
 		Complete(r)
 }

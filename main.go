@@ -85,11 +85,11 @@ func main() {
 	}
 
 	if err = (&controller.DeploymentReconciler{
-		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
-		UpdatedGeneration: map[string]int64{},
-		ReadyGeneration:   map[string]int64{},
-		CreatedGeneration: map[string]int64{},
+		Client:                          mgr.GetClient(),
+		Scheme:                          mgr.GetScheme(),
+		SeenDeploymentUpdatedGeneration: map[string]int64{},
+		SeenDeploymentReadyGeneration:   map[string]int64{},
+		SeenDeploymentCreatedGeneration: map[string]int64{},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ImportantJob")
 		os.Exit(1)
